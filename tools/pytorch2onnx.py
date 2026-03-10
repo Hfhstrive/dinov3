@@ -5,7 +5,7 @@ weights = '/media/inno/Pretrained/DINOV3/ViT_models_pretrained_on_web_dataset_(L
 
 # 1. load model
 model = torch.hub.load(
-    repo_or_dir='/home/inno/code/dinov3/',
+    repo_or_dir='//',
     model=MODEL_NAME,
     source="local",
     weights=weights,
