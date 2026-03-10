@@ -8,6 +8,7 @@ from enum import Enum
 
 from dinov3.eval.depth.models.embed import CenterPadding, StretchToMultiple
 from torch import Tensor, nn
+from typing import Union, Tuple, List
 
 logger = logging.getLogger("dinov3")
 
@@ -21,7 +22,8 @@ class BackboneLayersSet(Enum):
 
 def _get_backbone_out_indices(
     model: nn.Module,
-    backbone_out_layers: list[int] | tuple[int, ...] | BackboneLayersSet = BackboneLayersSet.FOUR_EVEN_INTERVALS,
+    backbone_out_layers: Union[
+        List[int], Tuple[int, ...], BackboneLayersSet] = BackboneLayersSet.FOUR_EVEN_INTERVALS,
 ):
     """
     Get indices for output layers of the ViT backbone. For now there are 3 options available:
@@ -64,7 +66,7 @@ class DinoVisionTransformerWrapper(nn.Module):
     def __init__(
         self,
         backbone_model: nn.Module,
-        backbone_out_layers: str | tuple[int, ...] | BackboneLayersSet,
+        backbone_out_layers: Union[str, Tuple[int, ...], BackboneLayersSet],
         use_backbone_norm: bool = False,
         adapt_to_patch_size: PatchSizeAdaptationStrategy = PatchSizeAdaptationStrategy.CENTER_PADDING,
     ):
@@ -105,7 +107,7 @@ class DinoVisionTransformerWrapper(nn.Module):
     def forward(
         self,
         x: Tensor,  # [B, rgb, H, W]
-    ) -> list[tuple[Tensor, Tensor]]:
+    ) -> List[Tuple[Tensor, Tensor]]:
         x = self.patch_size_adapter(x)
         outputs = self.backbone.get_intermediate_layers(  # type: ignore
             x,

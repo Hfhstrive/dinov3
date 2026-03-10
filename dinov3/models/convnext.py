@@ -144,7 +144,7 @@ class ConvNeXt(nn.Module):
         drop_path_rate: float = 0.0,
         layer_scale_init_value: float = 1e-6,
         # DINO arguments
-        patch_size: int | None = None,
+        patch_size: Optional[int] = None,
         **ignored_kwargs,
     ):
         super().__init__()
@@ -214,7 +214,7 @@ class ConvNeXt(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:

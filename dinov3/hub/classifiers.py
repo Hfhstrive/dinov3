@@ -17,6 +17,7 @@ from .backbones import (
 )
 
 from .utils import DINOV3_BASE_URL
+from typing import Union
 
 
 class ClassifierWeights(Enum):
@@ -28,7 +29,8 @@ def _make_dinov3_linear_classification_head(
     backbone_name: str = "dinov3_vit7b16",
     embed_dim: int = 8192,
     pretrained: bool = True,
-    classifier_weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
+    # classifier_weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
+    classifier_weights: Union[ClassifierWeights, str] = ClassifierWeights.IMAGENET1K,
     check_hash: bool = False,
     **kwargs,
 ):
@@ -73,8 +75,10 @@ def _make_dinov3_linear_classifier(
     *,
     backbone_name: str = "dinov3_vit7b16",
     pretrained: bool = True,
-    classifier_weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
-    backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    # classifier_weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
+    classifier_weights: Union[ClassifierWeights, str] = ClassifierWeights.IMAGENET1K,
+    # backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    backbone_weights: Union[BackboneWeights, str] = BackboneWeights.LVD1689M,
     check_hash: bool = False,
     **kwargs,
 ):
@@ -96,8 +100,10 @@ def _make_dinov3_linear_classifier(
 def dinov3_vit7b16_lc(
     *,
     pretrained: bool = True,
-    weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
-    backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    # weights: ClassifierWeights | str = ClassifierWeights.IMAGENET1K,
+    weights: Union[ClassifierWeights, str] = ClassifierWeights.IMAGENET1K,
+    # backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    backbone_weights: Union[BackboneWeights, str] = BackboneWeights.LVD1689M,
     check_hash: bool = False,
     **kwargs,
 ):

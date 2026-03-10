@@ -6,7 +6,7 @@
 import logging
 from pathlib import Path
 
-from typing import Union
+from typing import Union, Optional
 
 import torch
 import torch.nn as nn
@@ -98,7 +98,7 @@ def build_model_from_cfg(cfg, only_teacher: bool = False):
 
 def build_model_for_eval(
     config,
-    pretrained_weights: Union[str, Path] | None,
+    pretrained_weights: Optional[Union[str, Path]] = None,
     shard_unsharded_model: bool = False,  # If the model is not sharded, shard it. No effect if already sharded on disk
 ):
     model, _ = build_model_from_cfg(config, only_teacher=True)

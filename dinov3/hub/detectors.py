@@ -15,6 +15,8 @@ from dinov3.eval.detection.models.position_encoding import PositionEncoding
 from .backbones import Weights as BackboneWeights, dinov3_vit7b16, dinov3_vitl16plus, convert_path_or_url_to_url
 from .utils import DINOV3_BASE_URL
 
+from typing import List, Union
+
 
 class DetectionWeights(Enum):
     COCO2017 = "COCO2017"
@@ -31,7 +33,7 @@ class DetectorWithProcessor(torch.nn.Module):
         self.detector = detector
         self.postprocessor = postprocessor
 
-    def forward(self, samples: list[torch.Tensor]):
+    def forward(self, samples: List[torch.Tensor]):
         outputs = self.detector(samples)
         sizes_tensor = torch.tensor([sample.shape[1:] for sample in samples], device=samples[0].device)  # N * [3, H, W]
         return self.postprocessor(outputs, target_sizes=sizes_tensor, original_target_sizes=sizes_tensor)
@@ -41,8 +43,8 @@ def _make_dinov3_detector(
     *,
     backbone_name: str,
     pretrained: bool = True,
-    detector_weights: str | DetectionWeights,
-    backbone_weights: str | BackboneWeights,
+    detector_weights: Union[str, DetectionWeights],
+    backbone_weights: Union[str, BackboneWeights],
     check_hash: bool = False,
     **kwargs,
 ):
@@ -117,8 +119,8 @@ def _make_dinov3_detector(
 def dinov3_vit7b16_de(
     *,
     pretrained: bool = True,
-    weights: DetectionWeights | str = DetectionWeights.COCO2017,
-    backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    weights: Union[DetectionWeights, str] = DetectionWeights.COCO2017,
+    backbone_weights: Union[BackboneWeights, str] = BackboneWeights.LVD1689M,
     check_hash: bool = False,
     **kwargs,
 ):

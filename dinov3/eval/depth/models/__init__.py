@@ -12,6 +12,7 @@ from dinov3.eval.depth.checkpoint_utils import load_checkpoint
 from .dpt_head import DPTHead
 from .linear_head import LinearHead
 from .encoder import BackboneLayersSet, DinoVisionTransformerWrapper, PatchSizeAdaptationStrategy
+from typing import Dict, Union, List, Tuple, Optional
 
 
 @dataclass
@@ -22,7 +23,7 @@ class DecoderConfig:
     norm_strategy: str = (
         "linear"  # (choice: ["linear", "softmax", "sigmoid"]) activation used before normalization of depth-bin logits
     )
-    head_kwargs: dict[str, Any] = field(default_factory=dict)
+    head_kwargs: Dict[str, Any] = field(default_factory=dict)
     backbone_out_layers: Any = (
         BackboneLayersSet.FOUR_EVEN_INTERVALS  # One of BackboneLayersSet(Enum) or a list of indices e.g. [0, 1, 2, 3]
     )
@@ -106,7 +107,7 @@ class FeaturesToDepth(torch.nn.Module):
 
 
 def make_head(
-    embed_dims: int | list[int],
+    embed_dims: Union[int, List[int]],
     n_output_channels: int,
     use_batchnorm: bool = False,
     use_cls_token: bool = False,
@@ -190,7 +191,7 @@ class Depther(torch.nn.Module):
 
 def build_depther(
     backbone: torch.nn.Module,
-    backbone_out_layers: tuple[int, ...] | BackboneLayersSet,
+    backbone_out_layers: Union[Tuple[int, ...], BackboneLayersSet],
     n_output_channels: int,
     use_backbone_norm: bool = False,
     use_batchnorm: bool = False,
@@ -237,7 +238,7 @@ def build_depther(
 def make_depther_from_config(
     backbone,
     config: DecoderConfig,
-    checkpoint_path: str | None = None,
+    checkpoint_path: Optional[str] = None,
     autocast_dtype: torch.dtype = torch.float32,
 ) -> Depther:
     depther = build_depther(

@@ -42,7 +42,7 @@ def matmul(first, amax_first, second_t, amax_second_t, bias):
     return output
 
 
-@torch.compiler.allow_in_graph
+@torch._dynamo.allow_in_graph
 class Fp8LinearFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, a, b_t, bias):

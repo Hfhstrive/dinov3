@@ -250,7 +250,10 @@ def load_features_dict(path: str) -> Dict[str, torch.Tensor]:
     return features_dict
 
 
-def average_metrics(eval_metrics_dict: dict[Any, dict[str, torch.Tensor]], ignore_keys: List[str] = []):
+def average_metrics(
+    eval_metrics_dict: Dict[Any, Dict[str, torch.Tensor]],
+    ignore_keys: List[str] = []
+):
     """
     Function that computes the average and the std on a metrics dict.
     A linear evaluation dictionary contains "best_classifier",

@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn.init
 from torch import Tensor, nn
+import sys
+import os
+from ipdb import set_trace
+root_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, root_path)
 
 from dinov3.layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
 from dinov3.utils import named_apply
@@ -64,12 +69,12 @@ class DinoVisionTransformer(nn.Module):
         patch_size: int = 16,
         in_chans: int = 3,
         pos_embed_rope_base: float = 100.0,
-        pos_embed_rope_min_period: float | None = None,
-        pos_embed_rope_max_period: float | None = None,
+        pos_embed_rope_min_period: Optional[float] = None,
+        pos_embed_rope_max_period: Optional[float] = None,
         pos_embed_rope_normalize_coords: Literal["min", "max", "separate"] = "separate",
-        pos_embed_rope_shift_coords: float | None = None,
-        pos_embed_rope_jitter_coords: float | None = None,
-        pos_embed_rope_rescale_coords: float | None = None,
+        pos_embed_rope_shift_coords: Optional[float] = None,
+        pos_embed_rope_jitter_coords: Optional[float] = None,
+        pos_embed_rope_rescale_coords: Optional[float] = None,
         pos_embed_rope_dtype: str = "bf16",
         embed_dim: int = 768,
         depth: int = 12,
@@ -77,7 +82,7 @@ class DinoVisionTransformer(nn.Module):
         ffn_ratio: float = 4.0,
         qkv_bias: bool = True,
         drop_path_rate: float = 0.0,
-        layerscale_init: float | None = None,
+        layerscale_init: Optional[float] = None,
         norm_layer: str = "layernorm",
         ffn_layer: str = "mlp",
         ffn_bias: bool = True,
@@ -86,7 +91,7 @@ class DinoVisionTransformer(nn.Module):
         mask_k_bias: bool = False,
         untie_cls_and_patch_norms: bool = False,
         untie_global_and_local_cls_norm: bool = False,
-        device: Any | None = None,
+        device: Optional[Any] = None,
         **ignored_kwargs,
     ):
         super().__init__()
@@ -260,7 +265,7 @@ class DinoVisionTransformer(nn.Module):
             )
         return output
 
-    def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
@@ -321,7 +326,7 @@ class DinoVisionTransformer(nn.Module):
         elif return_class_token and return_extra_tokens:
             return tuple(zip(outputs, class_tokens, extra_tokens))
 
-    def forward(self, *args, is_training: bool = False, **kwargs) -> List[Dict[str, Tensor]] | Tensor:
+    def forward(self, *args, is_training: bool = False, **kwargs) -> Union[List[Dict[str, Tensor]], Tensor]:
         ret = self.forward_features(*args, **kwargs)
         if is_training:
             return ret
@@ -414,3 +419,62 @@ def vit_7b(patch_size=16, **kwargs):
         **kwargs,
     )
     return model
+
+
+class DINOv3Wrapper(torch.nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        # 创建默认的mask（全False，表示没有需要mask的token）
+        B, C, H, W = x.shape
+        device = x.device
+
+        # 计算patch数量
+        patch_size = 16  # 根据模型配置
+        num_patches = (H // patch_size) * (W // patch_size)
+
+        # 创建默认的mask（全False）
+        t_masks = torch.zeros(B, num_patches, dtype=torch.bool, device=device)
+
+        # 调用原始模型
+        return self.model(x, t_masks)
+
+
+if __name__ == '__main__':
+    model = vit_small()
+    state_dict = torch.load(
+        '/media/inno/Pretrained/DINOV3/ViT_models_pretrained_on_web_dataset_(LVD-1689M)/dinov3_vits16_pretrain_lvd1689m-08c60483.pth',
+        map_location=torch.device('cpu'))
+    model.load_state_dict(state_dict, strict=False)
+    model.eval()
+
+    # 创建固定大小的输入
+    input_data = torch.randn(1, 3, 512, 512)
+
+    # 创建其他参数的默认值
+    B, C, H, W = input_data.shape
+    patch_size = 16
+    num_patches = (H // patch_size) * (W // patch_size)
+    default_masks = torch.zeros(B, num_patches, dtype=torch.bool)
+
+    device = 'cpu'
+    model = model.to(device)
+    input_data = input_data.to(device)
+    default_masks = default_masks.to(device)
+
+    # 验证所有张量都有设备
+    print(f"Model device: {next(model.parameters()).device}")
+    print(f"Input device: {input_data.device}")
+
+    # 导出ONNX
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (input_data, default_masks),
+            '/home/inno/code/dinov3/test.onnx',
+            opset_version=17,
+            input_names=['pixel_values', 't_masks'],
+            output_names=['features'],
+        )

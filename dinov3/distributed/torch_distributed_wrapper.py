@@ -9,6 +9,7 @@ import random
 import socket
 import subprocess
 from datetime import timedelta
+from typing import Optional
 from enum import Enum
 from typing import List, Sequence
 
@@ -229,7 +230,8 @@ def enable_distributed(
     overwrite: bool = False,
     nccl_async_error_handling: bool = False,
     restrict_print_to_main_process: bool = True,
-    timeout: timedelta | None = None,
+    # timeout: timedelta | None = None,
+    timeout: Optional[timedelta] = None
 ):
     """Enable distributed mode.
 
