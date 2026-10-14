@@ -55,9 +55,10 @@ conda activate torch2.7.1
 `dinov3_<model>_pretrain_lvd1689m-*.pth` 文件。
 找到多个或未找到时，使用 `--weights '/完整路径/model.pth'` 显式指定。
 
-支持 `vitb16`（默认）、`vits16`、`vitl16`，以及
+支持 `vitb16`（默认）、`vits16`、`vits16plus`、`vitl16`、`vith16plus`，以及
 `convnext_tiny/small/base/large`。当前配置面向 web/LVD 权重；SAT ViT-L 的结构设置不同，不能直接套用。
-这里没有添加 ViT-S+/H+ 的配置。
+ViT-S+/16 和 ViT-H+/16 会自动选择 SwiGLU、FFN ratio=6，匹配官方权重结构。
+对应的 `--model` 参数分别为 `vits16plus`、`vith16plus`，权重查找方式与其他型号一致。
 
 启动新训练时，先用官方权重初始化 student 的 backbone，并随机初始化它的 DINO/iBOT 投影头，
 再将 student 的完整状态（backbone + 投影头）复制一次到 EMA teacher，使两者从相同状态开始。
@@ -250,4 +251,18 @@ ViT 提取了 4 个 `[2, 768, 14, 14]` 中间层；ConvNeXt 提取了
 PyTorch 峰值 allocated 显存分别约 6.13 GiB 和 4.48 GiB（不含 CUDA context、缓存及桌面占用）。
 这次容量验证关闭 checkpoint 保存和导出，未测试最大 batch 或长期训练效果。
 日志分别为 `/tmp/dinov3_d2_vitl_capacity.log`、`/tmp/dinov3_d2_convnext_large_capacity.log`。
-当前 custom 入口支持的最大 ViT 是 ViT-L；ViT-H+ 尚未配置，不能把 ViT-L 当作 3090 的硬件绝对上限。
+当前 custom 入口支持的最大 ViT 是 ViT-H+/16；此前的单卡容量验证只覆盖到 ViT-L，
+新的 ViT-S+/16 和 ViT-H+/16 验证结果如下。
+
+ViT-S+/16、ViT-H+/16 均已使用本机官方 LVD 权重通过严格加载和 CPU 前向检查。
+单元检查还对照了官方 Hub 构造器的全部 state_dict 键名、形状及归一化等设置。
+两者随后均在单卡 3090 上以 batch=2、224 global crop、96 local crop、4 个 local crop、
+bf16、激活 checkpoint、4096 prototypes 完成 3 步 DINO+iBOT 训练，loss/梯度为有限值：
+
+| 型号 | `--model` | PyTorch 峰值 allocated 显存 |
+| --- | --- | --- |
+| ViT-S+/16 | `vits16plus` | 约 0.90 GiB |
+| ViT-H+/16 | `vith16plus` | 约 16.63 GiB |
+
+这些容量检查关闭了保存和导出，不包含 CUDA context、缓存等显存，也没有验证最大 batch、长期训练或四卡通信。
+新测试日志为 `/tmp/dinov3_custom_vits16plus_smoke.log` 和 `/tmp/dinov3_custom_vith16plus_smoke.log`。

@@ -9,12 +9,48 @@ import torch
 
 from dinov3.checkpointer.backbone import load_pretrained_backbone
 from dinov3.data import make_dataset
+from dinov3.hub import backbones
+from dinov3.layers import SwiGLUFFN
+from dinov3.models import build_model
 from dinov3.train.custom import get_parser, make_config
 from dinov3.train.train import build_schedulers
 from dinov3.train.ssl_meta_arch import SSLMetaArch
 
 
 class CustomDatasetTests(unittest.TestCase):
+    def test_plus_models_match_official_architectures_and_find_weights(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for index in range(2):
+                Image.new("RGB", (64, 64)).save(root / f"{index}.png")
+            weights_root = root / "pretrained"
+            weights_root.mkdir()
+            for name in ("vits16plus", "vith16plus"):
+                with self.subTest(model=name), patch.dict(os.environ, {"WORLD_SIZE": "1"}):
+                    weights_path = weights_root / f"dinov3_{name}_pretrain_lvd1689m-testhash.pth"
+                    torch.save({}, weights_path)
+                    args = get_parser().parse_args([
+                        "--data-root", str(root), "--weights-root", str(weights_root), "--model", name,
+                        "--output-dir", str(root / name), "--batch-size", "2", "--dry-run",
+                    ])
+                    cfg = make_config(args)
+                    self.assertEqual(cfg.student.ffn_layer, "swiglu")
+                    self.assertEqual(cfg.student.ffn_ratio, 6)
+                    self.assertEqual(cfg.student.pretrained_weights, str(weights_path))
+                    # Meta tensors allow comparing the full H+ architecture without allocating its weights.
+                    with torch.device("meta"):
+                        configured, _ = build_model(cfg.student, only_teacher=True, device="meta")
+                        official = getattr(backbones, f"dinov3_{name}")(pretrained=False)
+                    self.assertEqual(
+                        {key: tuple(tensor.shape) for key, tensor in configured.state_dict().items()},
+                        {key: tuple(tensor.shape) for key, tensor in official.state_dict().items()},
+                    )
+                    self.assertIsInstance(configured.blocks[0].mlp, SwiGLUFFN)
+                    self.assertEqual(configured.norm.eps, official.norm.eps)
+                    self.assertEqual(configured.rope_embed.dtype, official.rope_embed.dtype)
+                    self.assertEqual(configured.n_storage_tokens, official.n_storage_tokens)
+                    self.assertEqual(configured.num_heads, official.num_heads)
+
     def test_dino_only_forward_does_not_call_ibot_head(self):
         class Backbone(torch.nn.Module):
             def forward(self, images, masks, is_training):

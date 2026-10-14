@@ -19,7 +19,9 @@ from dinov3.data.datasets import UnlabeledImages
 MODELS = {
     "vitb16": "vit_base",
     "vits16": "vit_small",
+    "vits16plus": "vit_small_plus",
     "vitl16": "vit_large",
+    "vith16plus": "vit_huge2_plus",
     "convnext_tiny": "convnext_tiny",
     "convnext_small": "convnext_small",
     "convnext_base": "convnext_base",
@@ -72,6 +74,9 @@ def make_config(args):
     cfg = OmegaConf.merge(get_default_config(), OmegaConf.load(Path(__file__).parents[1] / "configs/train/custom.yaml"))
     cfg.student.arch = MODELS[args.model]
     cfg.student.pretrained_weights = str(weights)
+    if args.model in {"vits16plus", "vith16plus"}:
+        cfg.student.ffn_layer = "swiglu"
+        cfg.student.ffn_ratio = 6.0
     cfg.train.dataset_path = f"UnlabeledImages:root={root}" + (f":extra={manifest}" if manifest else "")
     cfg.train.output_dir = str(Path(args.output_dir).expanduser().resolve())
     cfg.train.batch_size_per_gpu = args.batch_size
@@ -123,7 +128,8 @@ def make_config(args):
                 previous = OmegaConf.load(previous_config)
                 for key in (
                     "student.arch", "student.n_storage_tokens", "student.norm_layer",
-                    "student.patch_size", "dino.head_n_prototypes", "ibot.head_n_prototypes",
+                    "student.patch_size", "student.ffn_layer", "student.ffn_ratio",
+                    "dino.head_n_prototypes", "ibot.head_n_prototypes",
                     "train.dataset_path",
                 ):
                     if OmegaConf.select(previous, key) != OmegaConf.select(cfg, key):

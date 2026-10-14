@@ -329,16 +329,21 @@ class DinoVisionTransformer(nn.Module):
             return self.head(ret["x_norm_clstoken"])
 
 
-def vit_small(patch_size=16, **kwargs):
+def vit_small(patch_size=16, ffn_ratio=4, **kwargs):
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=384,
         depth=12,
         num_heads=6,
-        ffn_ratio=4,
+        ffn_ratio=ffn_ratio,
         **kwargs,
     )
     return model
+
+
+def vit_small_plus(patch_size=16, **kwargs):
+    kwargs.setdefault("ffn_layer", "swiglu")
+    return vit_small(patch_size=patch_size, ffn_ratio=6, **kwargs)
 
 
 def vit_base(patch_size=16, **kwargs):
@@ -377,16 +382,21 @@ def vit_so400m(patch_size=16, **kwargs):
     return model
 
 
-def vit_huge2(patch_size=16, **kwargs):
+def vit_huge2(patch_size=16, ffn_ratio=4, **kwargs):
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1280,
         depth=32,
         num_heads=20,
-        ffn_ratio=4,
+        ffn_ratio=ffn_ratio,
         **kwargs,
     )
     return model
+
+
+def vit_huge2_plus(patch_size=16, **kwargs):
+    kwargs.setdefault("ffn_layer", "swiglu")
+    return vit_huge2(patch_size=patch_size, ffn_ratio=6, **kwargs)
 
 
 def vit_giant2(patch_size=16, **kwargs):
