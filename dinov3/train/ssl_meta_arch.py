@@ -13,6 +13,7 @@ from torch import Tensor, nn
 
 import dinov3.distributed as distributed
 from dinov3.checkpointer import init_fsdp_model_from_checkpoint
+from dinov3.checkpointer.backbone import load_pretrained_backbone
 from dinov3.configs import get_default_config
 from dinov3.data import DataAugmentationDINO
 from dinov3.fsdp.ac_compile_parallelize import ac_compile_parallelize
@@ -44,6 +45,8 @@ class SSLMetaArch(nn.Module):
         assert cfg.compute_precision.sharding_strategy == "SHARD_GRAD_OP"
 
         self.cfg = cfg
+        if "convnext" in cfg.student.arch and cfg.ibot.loss_weight > 0 and not cfg.distillation.enabled:
+            raise ValueError("ConvNeXt ignores input masks. Set ibot.loss_weight=0 for DINO-only SSL adaptation.")
 
         student_model_dict = dict()
         teacher_model_dict = dict()
@@ -123,7 +126,9 @@ class SSLMetaArch(nn.Module):
         )
         student_model_dict["ibot_head"] = ibot_head_class()
         teacher_model_dict["ibot_head"] = ibot_head_class()
-        self.ibot_patch_loss = iBOTPatchLoss(cfg.ibot.head_n_prototypes)
+        self.ibot_patch_loss = iBOTPatchLoss(cfg.ibot.head_n_prototypes, compile_sinkhorn=cfg.train.compile)
+        if cfg.ibot.loss_weight == 0:
+            student_model_dict["ibot_head"].requires_grad_(False)
 
         # Build student and teacher models
         self.student = nn.ModuleDict(student_model_dict)
@@ -304,6 +309,10 @@ class SSLMetaArch(nn.Module):
         self.student.ibot_head.init_weights()
         self.dino_loss.init_weights()
         self.ibot_patch_loss.init_weights()
+        if self.cfg.student.pretrained_weights:
+            if self.cfg.student.resume_from_teacher_chkpt:
+                raise ValueError("Specify either pretrained_weights or resume_from_teacher_chkpt, not both.")
+            load_pretrained_backbone(self.student.backbone, self.cfg.student.pretrained_weights)
         self.model_ema.load_state_dict(self.student.state_dict())
         if self.has_gram_teacher:
             if self.gram_ckpt is not None:
@@ -447,8 +456,9 @@ class SSLMetaArch(nn.Module):
         ibot_patch = backbone_out["x_norm_patchtokens"]  # [n_crops * B, P, D]
 
         # IBOT head only on patches that are masked for the student
-        buffer = torch.index_select(ibot_patch.flatten(0, 1), dim=0, index=mask_indices_list)
-        masked_patch_after_head = self.teacher.ibot_head(buffer)
+        if self.ibot_loss_weight > 0:
+            buffer = torch.index_select(ibot_patch.flatten(0, 1), dim=0, index=mask_indices_list)
+            masked_patch_after_head = self.teacher.ibot_head(buffer)
 
         # DINO head on CLS tokens
         cls_after_head = self.teacher.dino_head(cls)  # [n_crops * B, K]
@@ -458,11 +468,13 @@ class SSLMetaArch(nn.Module):
             cls_after_head, teacher_temp=teacher_temp
         )  # [n_crops * B, K]
         cls_centered = cls_centered.unflatten(0, (n_crops, B))  # [n_crops, B, K]
-        masked_patch_centered = self.ibot_patch_loss.sinkhorn_knopp_teacher(
-            masked_patch_after_head,
-            teacher_temp=teacher_temp,
-            n_masked_patches_tensor=n_masked_patches_tensor,
-        )  # [n_masked_patches, K]
+        masked_patch_centered = None
+        if self.ibot_loss_weight > 0:
+            masked_patch_centered = self.ibot_patch_loss.sinkhorn_knopp_teacher(
+                masked_patch_after_head,
+                teacher_temp=teacher_temp,
+                n_masked_patches_tensor=n_masked_patches_tensor,
+            )  # [n_masked_patches, K]
 
         return {
             "cls_pre_head": cls.unflatten(0, [n_crops, B]),  # [n_crops, B, D]
@@ -536,7 +548,7 @@ class SSLMetaArch(nn.Module):
         # Forward global and local crops through the student backbone jointly
         global_out, local_out = self.student.backbone(
             [global_crops, local_crops.flatten(0, 1)],
-            masks=[masks if not self.is_distillation_enabled else None, None],
+            masks=[masks if not self.is_distillation_enabled and self.ibot_loss_weight > 0 else None, None],
             is_training=True,
         )
         g_cls, g_reg, g_patch = (
@@ -551,8 +563,11 @@ class SSLMetaArch(nn.Module):
         )
 
         # IBOT head only on masked patches
-        masked_patches_pre_head = torch.index_select(g_patch.flatten(0, 1), dim=0, index=mask_indices_list)
-        global_masked_patch_after_head = self.student.ibot_head(masked_patches_pre_head)
+        masked_patches_pre_head = None
+        global_masked_patch_after_head = None
+        if self.ibot_loss_weight > 0:
+            masked_patches_pre_head = torch.index_select(g_patch.flatten(0, 1), dim=0, index=mask_indices_list)
+            global_masked_patch_after_head = self.student.ibot_head(masked_patches_pre_head)
 
         # DINO head on CLS tokens (all in one pass)
         buffer = [
@@ -638,15 +653,16 @@ class SSLMetaArch(nn.Module):
         loss_accumulator += self.dino_koleo_loss_weight * koleo_scale * koleo_loss
 
         # IBOT loss
-        ibot_patch_loss = self.ibot_patch_loss.forward_masked(
-            student_global["masked_patch_after_head"],
-            teacher_global["masked_patch_centered"],
-            student_masks_flat=masks,
-            n_masked_patches=mask_indices_list.shape[0],
-            masks_weight=masks_weight,
-        )
-        loss_dict["ibot_loss"] = ibot_patch_loss
-        loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
+        if self.ibot_loss_weight > 0:
+            ibot_patch_loss = self.ibot_patch_loss.forward_masked(
+                student_global["masked_patch_after_head"],
+                teacher_global["masked_patch_centered"],
+                student_masks_flat=masks,
+                n_masked_patches=mask_indices_list.shape[0],
+                masks_weight=masks_weight,
+            )
+            loss_dict["ibot_loss"] = ibot_patch_loss
+            loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
 
         # Gram loss
         if self.gram_use_loss:
@@ -758,6 +774,10 @@ class SSLMetaArch(nn.Module):
             horizontal_flips=cfg.crops.horizontal_flips,
             mean=cfg.crops.rgb_mean,
             std=cfg.crops.rgb_std,
+            color_jitter_strength=cfg.crops.get("color_jitter_strength", (0.4, 0.4, 0.2, 0.1)),
+            color_jitter_probability=cfg.crops.get("color_jitter_probability", 0.8),
+            grayscale_probability=cfg.crops.get("grayscale_probability", 0.2),
+            solarize_probability=cfg.crops.get("solarize_probability", 0.2),
         )
 
     def get_maybe_fused_params_for_submodel(self, m: nn.Module):
@@ -782,7 +802,11 @@ class SSLMetaArch(nn.Module):
         all_params_groups = []
         for name, m in self.student.items():
             logger.info(f"Getting paramer groups for {name}")
-            all_params_groups += self.get_maybe_fused_params_for_submodel(m)
+            groups = list(self.get_maybe_fused_params_for_submodel(m))
+            if name.endswith("_head"):
+                for group in groups:
+                    group["lr_multiplier"] *= self.cfg.optim.get("head_lr_multiplier", 1.0)
+            all_params_groups += groups
         return all_params_groups
 
     def prepare_for_distributed_training(self) -> None:

@@ -109,7 +109,7 @@ def build_schedulers(cfg):
         base_value=cfg.optim["lr"],
         final_value=cfg.optim["min_lr"],
         total_iters=cfg.optim["epochs"] * OFFICIAL_EPOCH_LENGTH,
-        warmup_iters=cfg.optim["warmup_epochs"] * OFFICIAL_EPOCH_LENGTH,
+        warmup_iters=int(cfg.optim["warmup_epochs"] * OFFICIAL_EPOCH_LENGTH),
         start_warmup_value=0,
         trunc_extra=cfg.optim["schedule_trunc_extra"],
     )
@@ -128,8 +128,8 @@ def build_schedulers(cfg):
     teacher_temp = dict(
         base_value=cfg.teacher["teacher_temp"],
         final_value=cfg.teacher["teacher_temp"],
-        total_iters=cfg.teacher["warmup_teacher_temp_epochs"] * OFFICIAL_EPOCH_LENGTH,
-        warmup_iters=cfg.teacher["warmup_teacher_temp_epochs"] * OFFICIAL_EPOCH_LENGTH,
+        total_iters=int(cfg.teacher["warmup_teacher_temp_epochs"] * OFFICIAL_EPOCH_LENGTH),
+        warmup_iters=int(cfg.teacher["warmup_teacher_temp_epochs"] * OFFICIAL_EPOCH_LENGTH),
         start_warmup_value=cfg.teacher["warmup_teacher_temp"],
     )
 
@@ -139,7 +139,7 @@ def build_schedulers(cfg):
     teacher_temp_schedule = CosineScheduler(**teacher_temp)
     last_layer_lr_schedule = CosineScheduler(**lr)
 
-    last_layer_lr_schedule.schedule[: cfg.optim["freeze_last_layer_epochs"] * OFFICIAL_EPOCH_LENGTH] = (
+    last_layer_lr_schedule.schedule[: int(cfg.optim["freeze_last_layer_epochs"] * OFFICIAL_EPOCH_LENGTH)] = (
         0  # mimicking the original schedules
     )
     logger.info("Schedulers ready.")
@@ -263,6 +263,14 @@ def do_test(cfg, model, iteration, process_group, do_low_freq=False):
         ckpt_path = eval_dir / "teacher_checkpoint.pth"
         torch.save({"teacher": new_state_dict}, ckpt_path)
         logger.info("Saved eval checkpoint: %s", ckpt_path)
+        if cfg.train.get("export_backbone", False):
+            backbone_state = {
+                k.removeprefix("backbone."): tensor.detach().cpu()
+                for k, tensor in new_state_dict.items()
+                if k.startswith("backbone.")
+            }
+            torch.save(backbone_state, eval_dir / "backbone.pth")
+            logger.info("Saved standalone EMA backbone: %s", eval_dir / "backbone.pth")
 
 
 def build_data_loader_from_cfg(
@@ -576,6 +584,18 @@ def do_train(cfg, model, resume=False):
 
         iteration = iteration + 1
     metric_logger.synchronize_between_processes()
+    if cfg.train.get("save_final_checkpoint", False) and iteration > start_iter:
+        save_checkpoint(
+            ckpt_dir / str(iteration - 1),
+            iteration=iteration - 1,
+            model=model,
+            optimizer=optimizer,
+            overwrite=True,
+            process_group=process_subgroup,
+        )
+        if distributed.is_subgroup_main_process():
+            keep_last_n_checkpoints(ckpt_dir, cfg.checkpointing.max_to_keep)
+        do_test(cfg, model, "final", process_group=process_subgroup)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

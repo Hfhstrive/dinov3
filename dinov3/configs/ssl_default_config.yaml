@@ -81,6 +81,8 @@ train:
   cudagraphs: false
   sharded_eval_checkpoint: false
   cache_dataset: false
+  export_backbone: false
+  save_final_checkpoint: false
 student:
   arch: vit_large
   patch_size: 16
@@ -140,6 +142,7 @@ optim:
   scaling_rule: sqrt_wrt_1024
   patch_embed_lr_mult: 0.2
   dino_head_wd_multiplier: 1.0
+  head_lr_multiplier: 1.0
   layerwise_decay: 0.9
   multi_tensor_optim: true
   dump_fsdp_weights_path: ""
@@ -160,6 +163,10 @@ crops:
   localcrops_subset_of_globalcrops: false
   share_color_jitter: false
   horizontal_flips: true
+  color_jitter_strength: [0.4, 0.4, 0.2, 0.1]
+  color_jitter_probability: 0.8
+  grayscale_probability: 0.2
+  solarize_probability: 0.2
   gram_teacher_no_distortions: false  # If True, no distortions are applied to gram teacher crops
   rgb_mean:
   - 0.485

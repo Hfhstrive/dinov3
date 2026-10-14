@@ -32,6 +32,10 @@ class DataAugmentationDINO(object):
         horizontal_flips=True,
         mean=IMAGENET_DEFAULT_MEAN,
         std=IMAGENET_DEFAULT_STD,
+        color_jitter_strength=(0.4, 0.4, 0.2, 0.1),
+        color_jitter_probability=0.8,
+        grayscale_probability=0.2,
+        solarize_probability=0.2,
     ):
         self.global_crops_scale = global_crops_scale
         self.local_crops_scale = local_crops_scale
@@ -122,10 +126,10 @@ class DataAugmentationDINO(object):
         color_jittering = v2.Compose(
             [
                 v2.RandomApply(
-                    [v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                    p=0.8,
+                    [v2.ColorJitter(*color_jitter_strength)],
+                    p=color_jitter_probability,
                 ),
-                v2.RandomGrayscale(p=0.2),
+                v2.RandomGrayscale(p=grayscale_probability),
             ]
         )
 
@@ -134,7 +138,7 @@ class DataAugmentationDINO(object):
         global_transfo2_extra = v2.Compose(
             [
                 GaussianBlur(p=0.1),
-                v2.RandomSolarize(threshold=128, p=0.2),
+                v2.RandomSolarize(threshold=128, p=solarize_probability),
             ]
         )
 

@@ -641,6 +641,13 @@ Please adapt the [dataset class](dinov3/data/datasets/image_net_22k.py) to match
 
 ## Training
 
+### Continue pretraining on a custom unlabeled dataset
+
+Use `python -m torch.distributed.run --standalone --nproc_per_node=1 -m dinov3.train.custom`
+with `--data-root`, `--model`, and `--output-dir` to continue self-supervised training from official backbone weights.
+See [the custom-dataset training guide](docs/CUSTOM_SELF_SUPERVISED.md) for directory formats, configuration,
+single-GPU checks, four-GPU training, and backbone export.
+
 ### Fast setup: training DINOv3 ViT-L/16 on ImageNet-1k
 
 Run DINOv3 pre-training on 4 H100-80GB nodes (32 GPUs) in a SLURM cluster environment with submitit:

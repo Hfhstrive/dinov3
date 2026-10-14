@@ -1,0 +1,63 @@
+# Domain-adaptation starting point for RTX 3090, not the large-scale official recipe.
+# Architecture, weight path, dataset and epoch length are set by dinov3.train.custom.
+compute_precision:
+  param_dtype: bf16
+  reduce_dtype: fp32
+train:
+  batch_size_per_gpu: 8
+  num_workers: 4
+  checkpointing: true
+  checkpointing_full: true
+  compile: false
+  cache_dataset: false
+  export_backbone: true
+  save_final_checkpoint: true
+student:
+  drop_path_rate: 0.0
+  n_storage_tokens: 4
+  mask_k_bias: true
+  norm_layer: layernormbf16
+  pos_embed_rope_rescale_coords: 2.0
+  pos_embed_rope_dtype: fp32
+dino:
+  head_n_prototypes: 4096
+  head_hidden_dim: 2048
+  head_bottleneck_dim: 256
+  koleo_loss_weight: 0.05
+ibot:
+  head_n_prototypes: 4096
+  head_hidden_dim: 2048
+  head_bottleneck_dim: 256
+  mask_ratio_min_max: [0.1, 0.5]
+  mask_sample_probability: 0.5
+optim:
+  epochs: 10
+  lr: 0.00001
+  min_lr: 0.000001
+  scaling_rule: none
+  head_lr_multiplier: 10.0
+  warmup_epochs: 0.1
+  freeze_last_layer_epochs: 0
+  weight_decay: 0.04
+  weight_decay_end: 0.04
+  layerwise_decay: 0.9
+  multi_tensor_optim: false
+teacher:
+  momentum_teacher: 0.996
+  final_momentum_teacher: 1.0
+  warmup_teacher_temp_epochs: 0.1
+crops:
+  global_crops_size: 224
+  local_crops_size: 96
+  local_crops_number: 4
+  global_crops_scale: [0.5, 1.0]
+  local_crops_scale: [0.15, 0.5]
+  color_jitter_strength: [0.15, 0.15, 0.1, 0.02]
+  color_jitter_probability: 0.5
+  grayscale_probability: 0.0
+  solarize_probability: 0.0
+evaluation:
+  eval_period_iterations: 5000
+checkpointing:
+  period: 5000
+  max_to_keep: 2
