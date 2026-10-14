@@ -35,10 +35,10 @@ class _LevelColoredFormatter(logging.Formatter):
         if colored_kwargs is None:
             return log
 
-        msg = record.msg % record.args if record.msg == "%s" else record.msg
+        # Formatter.format has already converted objects to strings and applied logging arguments.
+        msg = record.message
         index = log.rfind(msg, len(log) - len(msg))
-        # Can happen in some cases, like if the msg contains `%s` which
-        # have been replaced in `formatMessage`. Fallback to no colors
+        # Fall back to uncolored output if the format does not end with the message.
         if index == -1:
             return log
         prefix = log[:index]
