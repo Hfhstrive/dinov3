@@ -4,6 +4,7 @@ Use torchrun --standalone --nproc_per_node=1 (or 4) -m dinov3.train.custom.
 """
 
 import argparse
+import logging
 import math
 import os
 from pathlib import Path
@@ -11,9 +12,13 @@ import sys
 import tempfile
 
 from omegaconf import OmegaConf
+from torch.distributed.elastic.multiprocessing.errors import record
 
 from dinov3.configs import get_default_config
 from dinov3.data.datasets import UnlabeledImages
+
+
+logger = logging.getLogger("dinov3")
 
 
 MODELS = {
@@ -144,6 +149,7 @@ def make_config(args):
     return cfg
 
 
+@record
 def main():
     args = get_parser().parse_args()
     cfg = make_config(args)
@@ -163,6 +169,10 @@ def main():
 
         try:
             train_main()
+        except Exception:
+            # Unhandled tracebacks normally go only to stderr, outside the training file logger.
+            logger.exception("Custom-dataset training failed on rank %s.", os.environ.get("RANK", "0"))
+            raise
         finally:
             import torch.distributed as dist
 

@@ -1,10 +1,15 @@
+import json
+import logging
 import os
 from pathlib import Path
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from PIL import Image
+from omegaconf import OmegaConf
 import torch
 
 from dinov3.checkpointer.backbone import load_pretrained_backbone
@@ -13,11 +18,88 @@ from dinov3.hub import backbones
 from dinov3.layers import SwiGLUFFN
 from dinov3.models import build_model
 from dinov3.train.custom import get_parser, make_config
-from dinov3.train.train import build_schedulers
+from dinov3.train import custom
+from dinov3.train.train import build_data_loader_from_cfg, build_schedulers
 from dinov3.train.ssl_meta_arch import SSLMetaArch
 
 
 class CustomDatasetTests(unittest.TestCase):
+    def test_prefetch_configuration_reaches_training_data_loader(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for index in range(2):
+                Image.new("RGB", (64, 64)).save(root / f"{index}.png")
+            weights = root / "weights.pth"
+            torch.save({}, weights)
+            args = get_parser().parse_args([
+                "--data-root", folder, "--weights", str(weights), "--output-dir", str(root / "output"),
+                "--batch-size", "2", "--num-workers", "1", "train.prefetch_factor=1",
+            ])
+            with patch.dict(os.environ, {"WORLD_SIZE": "1"}):
+                cfg = make_config(args)
+            self.assertTrue(cfg.train.gc_enabled)
+            model = SimpleNamespace(build_data_augmentation_dino=lambda cfg: None)
+            loader = build_data_loader_from_cfg(cfg, model, start_iter=0)
+            self.assertEqual(loader.num_workers, 1)
+            self.assertEqual(loader.prefetch_factor, 1)
+            cfg.train.num_workers = 0
+            loader = build_data_loader_from_cfg(cfg, model, start_iter=0)
+            self.assertEqual(loader.num_workers, 0)
+            self.assertIsNone(loader.prefetch_factor)
+
+    def test_training_failure_writes_traceback_to_log_and_elastic_error_file(self):
+        def fail_training():
+            try:
+                raise OSError("cannot decode frame.jpg")
+            except OSError as exc:
+                raise RuntimeError("training input failed") from exc
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cfg = OmegaConf.create({"train": {"output_dir": str(root)}})
+            for rank in (0, 1):
+                with self.subTest(rank=rank):
+                    log_path = root / f"rank{rank}.log"
+                    error_path = root / f"rank{rank}.error.json"
+                    logger = logging.Logger("test_training_failure")
+                    handler = logging.FileHandler(log_path)
+                    logger.addHandler(handler)
+                    try:
+                        with (
+                            patch.dict(os.environ, {"RANK": str(rank), "TORCHELASTIC_ERROR_FILE": str(error_path)}),
+                            patch.object(sys, "argv", ["custom", "--data-root", folder, "--output-dir", folder]),
+                            patch.object(custom, "make_config", return_value=cfg),
+                            patch.object(custom, "logger", logger),
+                            patch("dinov3.train.train.main", side_effect=fail_training),
+                            patch("torch.distributed.is_initialized", return_value=False),
+                        ):
+                            with self.assertRaisesRegex(RuntimeError, "training input failed"):
+                                custom.main()
+                    finally:
+                        handler.close()
+                        logger.removeHandler(handler)
+                    logged = log_path.read_text()
+                    self.assertIn(f"failed on rank {rank}", logged)
+                    error = json.loads(error_path.read_text())
+                    traceback = error["message"]["extraInfo"]["py_callstack"]
+                    for output in (logged, traceback):
+                        self.assertIn("Traceback (most recent call last):", output)
+                        self.assertIn("OSError: cannot decode frame.jpg", output)
+                        self.assertIn("RuntimeError: training input failed", output)
+
+    def test_configuration_failure_is_recorded_before_training_logging_starts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            error_path = Path(folder) / "error.json"
+            with (
+                patch.dict(os.environ, {"TORCHELASTIC_ERROR_FILE": str(error_path)}),
+                patch.object(sys, "argv", ["custom", "--data-root", folder, "--output-dir", folder]),
+                patch.object(custom, "make_config", side_effect=FileNotFoundError("dataset unavailable")),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "dataset unavailable"):
+                    custom.main()
+            error = json.loads(error_path.read_text())
+            self.assertIn("FileNotFoundError: dataset unavailable", error["message"]["extraInfo"]["py_callstack"])
+
     def test_plus_models_match_official_architectures_and_find_weights(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -329,6 +329,7 @@ def build_data_loader_from_cfg(
         dataset=dataset,
         batch_size=batch_size,
         num_workers=num_workers,
+        prefetch_factor=cfg.train.get("prefetch_factor", 2),
         shuffle=True,
         seed=cfg.train.seed + start_iter + 1,
         sampler_type=sampler_type,
@@ -387,6 +388,18 @@ def build_multi_resolution_data_loader_from_cfg(
     return data_loader
 
 
+def configure_training_gc(cfg):
+    # DataLoader workers are started lazily on the first iteration. With fork they
+    # inherit this policy; collecting only in the parent cannot collect worker cycles.
+    if cfg.train.get("gc_enabled", False):
+        gc.enable()
+        logger.info("Automatic Python garbage collection enabled (also inherited by forked data workers).")
+    else:
+        gc.disable()
+        logger.info("Automatic Python garbage collection disabled; using periodic manual collection.")
+    gc.collect()
+
+
 def do_train(cfg, model, resume=False):
     process_subgroup = distributed.get_process_subgroup()
     ckpt_dir = Path(cfg.train.output_dir, "ckpt").expanduser()
@@ -439,9 +452,7 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration %d", start_iter)
     metrics_file = os.path.join(cfg.train.output_dir, "training_metrics.json")
     metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
-    # Manual garbage collection
-    gc.disable()
-    gc.collect()
+    configure_training_gc(cfg)
 
     # Training loop
     student = model.student

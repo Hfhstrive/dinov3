@@ -141,6 +141,8 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
 | --- | --- |
 | 精度 | bf16 参数计算、fp32 梯度规约，无 FP8 |
 | 激活 checkpoint | 开启，compile 默认关闭 |
+| DataLoader | 每卡 4 workers，每 worker 预取 2 个 batch；可用 `train.prefetch_factor=1` 降低预取量 |
+| Python 垃圾回收 | custom 默认 `train.gc_enabled=true`，保持主进程及 fork worker 的自动循环引用回收 |
 | global / local 尺寸 | 224 / 96，正式训练 4 个 local crop |
 | backbone 基础峰值学习率 | 1e-5；ViT 使用层间衰减，patch embedding 额外乘 0.2 |
 | 新投影头学习率倍率 | 10，即峰值 1e-4 |
@@ -178,6 +180,103 @@ output/
 若要开始新实验，换一个输出目录。入口拒绝在已有 checkpoint 的目录里用 `--no-resume` 覆盖旧训练，
 也检查恢复时的模型结构及数据路径是否变化。
 `ckpt` 用于恢复训练；`backbone.pth` 用于提取特征或下游任务，两者不能互换。
+
+### 异常退出和 screen 后台日志
+
+`ChildFailedError` 是 torchrun 对子进程失败的汇总。`exitcode: 1` 和 `rank: 0` 本身无法区分
+读图异常、CUDA 错误、通信异常或磁盘写入失败。应查看它之前的原始 traceback。
+训练日志默认位于 `output/logs/log.txt`，其他 rank 对应 `log.txt.rank1` 等。
+旧版入口的未捕获异常只输出到 stderr，未必写入这些日志；若 screen 回滚和重定向文件都没有保留，
+无法仅凭最后几行正常 Training 指标还原本次异常。
+
+如果原 screen 会话还在，先进入发生错误的窗口，按 `Ctrl+a` 再按 `:`，输入
+`hardcopy -h /tmp/dinov3_screen.txt` 并回车，将当前窗口和仍保留的回滚内容导出。
+随后在 shell 中执行 `tail -n 200 /tmp/dinov3_screen.txt`，查找 `ChildFailedError` 前的原始 traceback。
+重新启动训练前先保存这份内容，以免新输出挤掉旧回滚。
+
+当前入口为 `main` 添加了 PyTorch Elastic 的 `@record`，并将训练异常和完整 traceback
+写入各 rank 的训练日志。`@record` 同时将 Python 异常写入 torchrun 指定的 `error.json`，
+让 `ChildFailedError` 汇总中能显示具体异常。这个改动需要同步服务器代码后才会生效。
+进程被 SIGKILL、机器掉电等情况无法保证留下 Python traceback。
+
+在 screen 中运行时，可在 torchrun 的参数位置添加 `--log-dir` 和 `--tee 3`。
+下面沿用前文四卡示例；恢复已有任务时应保留该任务原来的模型、数据、batch、epochs 和其他训练配置：
+
+```bash
+OUT=/path/to/output/custom_vitb16
+PYTHONUNBUFFERED=1 python -m torch.distributed.run \
+  --standalone --nproc_per_node=4 \
+  --log-dir "$OUT/torchrun" --tee 3 \
+  -m dinov3.train.custom \
+  --data-root /path/to/my_dataset/images \
+  --weights-root /path/to/Pretrained/DINOV3 \
+  --model vitb16 --output-dir "$OUT" \
+  --batch-size 8 --num-workers 4 --epochs 10
+```
+
+`--tee 3` 将各 rank 的 stdout/stderr 同时显示在终端并写入日志；这些参数必须放在
+`-m dinov3.train.custom` 之前。torchrun 会在指定目录下按本次运行和 rank 创建日志目录，
+其中的 `stderr.log` 保存原始错误输出，Python 异常还会产生 `error.json`。
+`--log-dir` 与训练的 `--output-dir` 含义不同，不会改变 checkpoint 的恢复位置。
+
+恢复时，在日志中确认出现 `Checkpoint found ...`、`Loaded: ...` 和
+`Starting training from iteration ...`。默认每 5000 步保存一次，因此在第 7700 步附近异常退出时，
+最近的完整 checkpoint 通常是 `ckpt/4999`，将从第 5000 步继续，不能恢复尚未保存的步骤。
+可按保存耗时和磁盘容量将 `checkpointing.period=1000` 放到命令末尾，缩小后续故障时的回退范围。
+这控制模型保存频率，与 `train.checkpointing`（激活重计算）无关。
+
+### DataLoader worker 被 Killed
+
+若原始异常是 `DataLoader worker (pid ...) is killed by signal: Killed`，直接原因是读图子进程
+收到 SIGKILL。主训练进程的 SIGCHLD 处理器可能在 `loss.backward()` 等任意执行位置检测到它；
+这不能据此定位为反向传播或 CUDA 显存不足。
+优先排查系统 RAM、cgroup/容器内存限制及 OOM killer；SIGKILL 也可能来自外部进程管理，
+仅凭 Python traceback 无法确认发送者。
+
+以 2026-10-16 05:38、worker PID 30252 的故障为例，在服务器检查：
+
+```bash
+journalctl -k --since '2026-10-16 05:30:00' --until '2026-10-16 05:45:00' --no-pager \
+  | rg -i '30252|oom|out of memory|killed process'
+free -h
+```
+
+若日志包含同一 PID 的 `Out of memory: Killed process` 或 `Memory cgroup out of memory`，
+即可确认对应的 OOM 事件。无权读取时需要由有权限的账号检查；没有匹配记录不代表已排除 OOM。
+`free -h` 是检查时的状态，进程退出后 RAM 可能已经释放，不能单独证明故障发生时内存充足。
+
+`--num-workers` 是每卡进程的 worker 数。四卡、每卡 4 workers 共启动 16 个读图子进程；
+默认每 worker 预取 2 个 batch，总共最多有约 32 个 batch 的预取任务。
+这些任务涉及原图解码、多视角增强、batch 拼接和锁页内存，另外 worker 访问的 Python 路径列表
+也可能放大内存占用。它们占用系统内存，不能用 `nvidia-smi` 或训练日志的 CUDA `mem` 来衡量。
+可参考 [PyTorch DataLoader 文档](https://docs.pytorch.org/docs/stable/data.html)。
+
+保持原来的模型、数据、batch 和 epochs，先将 `--num-workers 4` 改成 `--num-workers 1`，
+并在命令末尾添加 `train.prefetch_factor=1`。四卡下的预取任务从约 32 降到约 4，
+不代表整个训练的 RAM 占用会按同样比例降低；它也不改变全局 batch 或计划训练步数。
+这个预取配置需要同步 `dinov3/data/loaders.py` 和 `dinov3/train/train.py` 等更新后才会生效。
+还可用 `--num-workers 0` 临时排除多进程读图因素；此时程序自动禁用预取参数，读取在主进程执行。
+这些是减少内存压力的措施，不代替 OOM 日志确认或原图尺寸检查。
+
+若单 worker 运行数小时后 `available` 仍持续减少，还应检查 Python 垃圾回收策略。
+原训练循环在第一次迭代 DataLoader 前执行 `gc.disable()`，Linux/Python 3.12 默认 fork worker
+会继承关闭状态。主进程每 150 步执行的 `gc.collect()` 无法回收 worker 内的循环引用。
+官方仓库 [issue #150](https://github.com/facebookresearch/dinov3/issues/150) 有类似的 RAM 增长和 worker OOM 报告；
+它提供了排查依据，不是对所有 RAM 增长的统一归因。
+
+当前 custom 配置默认启用 `train.gc_enabled=true`；训练入口会在 worker 启动前调用 `gc.enable()`。
+原官方配置保留手动回收策略。单元检查验证了关闭和开启两种策略在 fork worker 中的实际继承状态。
+要在服务器应用这个修复，必须更新 `dinov3/train/train.py` 和配置，然后重启训练进程；
+只修改命令参数或磁盘文件不能改变已在运行进程的 GC 状态。
+等待最近一次 `Saved: .../ckpt/...` 完成后再正常结束任务，使用相同输出目录恢复，并移除原命令里的
+`--no-resume`。可显式添加 `train.gc_enabled=true`，保留 batch、GPU 数量和 epochs。
+启动日志应出现 `Automatic Python garbage collection enabled`。
+该修复仍需通过服务器的长期 RAM 趋势验证，不保证回收仍被引用的对象或让分配器立即归还全部 RSS。
+
+Linux 通常会自动回收可回收文件缓存，但进程仍持有的匿名内存及无法回收的对象不会因 RAM 紧张自动消失。
+`available` 已经估计了可回收部分；不要将它与 `buff/cache` 再相加当作额外余量。
+建议结合 `ps -u "$USER" -o pid,ppid,comm,rss --sort=-rss | head -n 15` 和 `/proc/meminfo` 中的
+`AnonPages`、`Cached`、`Shmem`、`Unevictable` 观察来源，不能只凭 `free` 列判断是否会 OOM。
 
 从导出 ViT-B 提取全局和局部特征：
 
@@ -266,3 +365,48 @@ bf16、激活 checkpoint、4096 prototypes 完成 3 步 DINO+iBOT 训练，loss/
 
 这些容量检查关闭了保存和导出，不包含 CUDA context、缓存等显存，也没有验证最大 batch、长期训练或四卡通信。
 新测试日志为 `/tmp/dinov3_custom_vits16plus_smoke.log` 和 `/tmp/dinov3_custom_vith16plus_smoke.log`。
+
+## 大数据集训练提速：ViT-B/16 起点
+
+先看日志的 `time` 与 `data`。若每步约 1 秒、`data` 只有约 0.001 秒，优先测试计算和通信侧的参数。
+GPU 利用率接近 100% 也可能包含分片通信，不能据此认定小 batch 已达到最高吞吐。
+判断加速应比较 `全局 batch / 每步秒数`，而不是仅比较每步秒数。
+
+针对显存充足的 ViT-B，可以先用独立输出目录测试：
+
+```bash
+python -m torch.distributed.run --standalone --nproc_per_node=4 \
+  -m dinov3.train.custom \
+  --data-root /path/to/my_dataset/images \
+  --weights-root /path/to/Pretrained/DINOV3 \
+  --model vitb16 --output-dir /path/to/output/vitb_speed_check \
+  --batch-size 32 --num-workers 4 --smoke-test --steps 200 \
+  crops.local_crops_number=4 train.checkpointing=false \
+  optim.multi_tensor_optim=true checkpointing.period=999999 \
+  train.save_final_checkpoint=false
+```
+
+这里关闭的是激活 checkpoint（避免重算），不是生产训练的权重保存。
+短测额外关闭保存和导出，以减少测量干扰；正式训练换新的输出目录，去掉 `--smoke-test --steps 200`、
+`checkpointing.period=999999` 和 `train.save_final_checkpoint=false`，并选择 `--epochs 5` 或自己的训练预算。
+`crops.local_crops_number=4` 使 smoke-test 与默认正式训练的视角数一致。
+融合优化器复用已有配置，无需安装额外库。不要将该 batch/显存配置直接套用到更大的 ViT-H+。
+
+本机单卡 3090、ViT-B/16、224/96 尺寸、4 个 local crop、4096 prototypes、bf16、4 workers 的 40 步短测：
+
+| 每卡 batch | 激活 checkpoint | 融合 AdamW | 稳态秒/步 | 原始图像/秒 | 峰值 allocated 显存 |
+| --- | --- | --- | ---: | ---: | ---: |
+| 8 | 开 | 关 | 0.280 | 28.5 | 2.18 GiB |
+| 32 | 关 | 关 | 0.437 | 73.3 | 8.43 GiB |
+| 32 | 关 | 开 | 0.337 | 95.0 | 8.43 GiB |
+
+时间使用最后 20 步均值，排除了前 20 步预热；保存和导出关闭，显存不包含 CUDA context、缓存等。
+最终组合的本机吞吐约为基线的 3.33 倍；四卡拓扑、CPU 和实际图像不同，服务器收益必须重新测量。
+结果明细在 `/tmp/dinov3_vitb_throughput_comparison.json`。
+
+训练预算与吞吐是两件事。约 87.2 万张图像、4 卡、每卡 batch=8 时，20 epoch 约需 544,980 步；
+减为 5 epoch 约需 136,245 步，属于减少训练预算。在每卡 batch=32 时，5 epoch 约需 34,065 步，
+但每步处理更多图像、耗时也不同，不能将步数缩减比例直接当作实际加速倍数。
+较大的 batch 还会改变优化轨迹和 Sinkhorn 目标分配；当前 `scaling_rule=none`，学习率不会自动增大。
+先保持学习率起点，使用下游验证判断是否需要更长训练或进一步调参。
+已有任务改 batch、epoch 或优化器后不再是同一训练计划；建议用新输出目录做对照，避免混用旧配置和训练状态。

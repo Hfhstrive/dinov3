@@ -6,6 +6,8 @@ compute_precision:
 train:
   batch_size_per_gpu: 8
   num_workers: 4
+  prefetch_factor: 2
+  gc_enabled: true  # Keep cyclic collection active in the main process and forked data workers.
   checkpointing: true
   checkpointing_full: true
   compile: false

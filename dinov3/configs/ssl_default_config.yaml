@@ -69,6 +69,8 @@ train:
   saveckp_freq: 20
   seed: 0
   num_workers: 10
+  prefetch_factor: 2
+  gc_enabled: false  # Official recipe uses synchronized manual garbage collection.
   OFFICIAL_EPOCH_LENGTH: 1250
   monitor_gradient_norm: false
   chunk_schedule: []
